@@ -908,15 +908,36 @@ async function createOnlineGame(){
 async function joinGame(){
   const code=document.getElementById('code-input').value.trim().toUpperCase();
   if(code.length<2){toast('Enter a valid game code');return;}
-  const res=await fetch('/api/game/join/'+code,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({playerId})});
-  const d=await res.json();
-  if(d.error){toast('❌ '+d.error);return;}
+  const btn=document.querySelector('#lobby-join .btn.primary');
+  if(btn){btn.disabled=true;btn.textContent='Joining…';}
+  let d;
+  try{
+    const res=await fetch('/api/game/join/'+code,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({playerId})});
+    d=await res.json();
+  }catch(e){toast('Network error');if(btn){btn.disabled=false;btn.textContent='Join →';}return;}
+  if(d.error){toast('❌ '+d.error);if(btn){btn.disabled=false;btn.textContent='Join →';}return;}
   gameId=d.gameId; myColor=d.color;
   localStorage.setItem('chess_gid',gameId); localStorage.setItem('chess_col',myColor);
-  connectWS(gameId);
+  // Connect WS first; once connected, fetch current state and open game immediately.
+  // (GAME_START broadcast fires before WS connects, so we can't rely on receiving it.)
+  connectWS(gameId, async ()=>{
+    try{
+      const r=await fetch(`/api/game/${gameId}?playerId=${playerId}`);
+      const state=await r.json();
+      boardArr=state.board; whiteToMove=state.whiteToMove; gameStatus=state.status;
+      moveHistory=state.moveHistory||[]; lastMove=state.lastMove&&state.lastMove.length?state.lastMove:null;
+      gameMode='online';
+      openGameScreen('♟ Chess — '+gameId, true, true, true);
+      document.getElementById('move-list-card').style.display='flex';
+      document.getElementById('teach-card').style.display='none';
+      setPlayerBars('Opponent (white)','You (black)','white','black');
+      renderBoard(); updateStatus(); renderMoveList();
+      toast('🎮 Game started! You are black');
+    }catch(e){toast('Failed to load game state');}
+  });
 }
 
-function connectWS(gid){
+function connectWS(gid, onConnected){
   const sock=new SockJS('/ws');
   stompClient=Stomp.over(sock); stompClient.debug=null;
   stompClient.connect({},()=>{
@@ -924,6 +945,7 @@ function connectWS(gid){
     stompClient.subscribe('/topic/game/'+gid,msg=>{
       handleServerMsg(JSON.parse(msg.body));
     });
+    if(onConnected) onConnected();
   },()=>{setConnDot(false);toast('Disconnected');});
 }
 function disconnectWS(){if(stompClient&&stompClient.connected){stompClient.disconnect();stompClient=null;}}
