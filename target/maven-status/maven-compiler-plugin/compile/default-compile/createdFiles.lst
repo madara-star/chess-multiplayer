@@ -1,0 +1,11 @@
+com/chess/engine/GameStatus.class
+com/chess/engine/ChessEngine.class
+com/chess/engine/MoveResult.class
+com/chess/controller/GameWebSocketController.class
+com/chess/config/WebSocketConfig.class
+com/chess/service/GameService.class
+com/chess/ChessApplication.class
+com/chess/model/GameStateMessage.class
+com/chess/controller/GameController.class
+com/chess/model/Game.class
+com/chess/model/MoveRequest.class
