@@ -26,10 +26,13 @@ public class GameService {
     public Game joinGame(String gameId, String playerId) {
         Game game = games.get(gameId.toUpperCase());
         if (game == null) throw new IllegalArgumentException("Game not found: " + gameId);
-        if (game.isFull()) throw new IllegalStateException("Game is already full");
         if (playerId.equals(game.getWhitePlayerId()))
             throw new IllegalStateException("You are already in this game as white");
-        game.setBlackPlayerId(playerId);
+        // Allow same player to rejoin if they already claimed black (e.g. double-click / reconnect)
+        if (game.isFull() && !playerId.equals(game.getBlackPlayerId()))
+            throw new IllegalStateException("Game is already full");
+        if (!game.isFull())
+            game.setBlackPlayerId(playerId);
         return game;
     }
 
