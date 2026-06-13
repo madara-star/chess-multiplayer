@@ -797,6 +797,7 @@ let teachPracticeMode = false;
 
 // Hint + Analysis
 let hintMove    = null;   // [fr,fc,tr,tc] currently shown hint
+let _boardFlip  = null;   // tracks current board orientation to avoid unnecessary rebuilds
 let hintTimer   = null;
 let fullMoveLog = [];     // {fr,fc,tr,tc,promo,san,wasWhite} — all modes
 
@@ -977,14 +978,28 @@ function handleServerMsg(data){
 
 function applyOnlineState(data){
   const prevMoveCount=moveHistory.length;
-  boardArr=data.board; whiteToMove=data.whiteToMove; gameStatus=data.status;
+  const oldBoardArr=boardArr;
+  const newBoardArr=data.board;
+  whiteToMove=data.whiteToMove; gameStatus=data.status;
   moveHistory=data.moveHistory||[]; lastMove=data.lastMove;
-  // Track moves for analysis
-  if(data.lastMove&&data.lastMove.length===4&&moveHistory.length>prevMoveCount){
+
+  const hasNewMove=data.lastMove&&data.lastMove.length===4&&moveHistory.length>prevMoveCount;
+  if(hasNewMove){
     const[fr,fc,tr,tc]=data.lastMove;
-    const wasWhite=moveHistory.length%2===1; // odd count = white just moved
+    const wasWhite=moveHistory.length%2===1;
     fullMoveLog.push({fr,fc,tr,tc,promo:'q',san:moveHistory[moveHistory.length-1]||'?',wasWhite});
+    if(oldBoardArr){
+      // Keep old board in DOM during animation, then swap to new state
+      boardArr=oldBoardArr;
+      animatePieceMove(fr,fc,tr,tc,()=>{
+        boardArr=newBoardArr;
+        renderBoard(); updateStatus(); renderMoveList();
+        handleGameOver(myColor==='white'?'white':'black');
+      });
+      return;
+    }
   }
+  boardArr=newBoardArr;
   renderBoard(); updateStatus(); renderMoveList();
   handleGameOver(myColor==='white'?'white':'black');
 }
@@ -1068,21 +1083,22 @@ function botClick(row,col){
 function applyLocalMove(fr,fc,tr,tc,promo){
   const san=JE.sanMove(localBoard,localState,fr,fc,tr,tc,promo);
   const wasWhite=localState.wt;
-  animatePieceMove(fr,fc,tr,tc,()=>{});
   const{board:b2,state:s2}=JE.apply(localBoard,localState,fr,fc,tr,tc,promo);
-  localBoard=b2; localState=s2;
-  boardArr=JE.toArr(localBoard); whiteToMove=localState.wt;
-  gameStatus=JE.status(localBoard,localState); lastMove=[fr,fc,tr,tc];
-  hintMove=null; clearTimeout(hintTimer);
-
-  // Append check/mate symbol
+  const newStatus=JE.status(b2,s2);
   let s=san;
-  if(gameStatus==='WHITE_WINS'||gameStatus==='BLACK_WINS') s+='#';
-  else if(gameStatus==='CHECK') s+='+';
-  moveHistory.push(s);
-  fullMoveLog.push({fr,fc,tr,tc,promo:promo||'q',san:s,wasWhite});
+  if(newStatus==='WHITE_WINS'||newStatus==='BLACK_WINS') s+='#';
+  else if(newStatus==='CHECK') s+='+';
 
-  renderBoard(); updateStatus(); renderMoveList();
+  // Animate using current DOM (piece still visible), then commit state
+  animatePieceMove(fr,fc,tr,tc,()=>{
+    localBoard=b2; localState=s2;
+    boardArr=JE.toArr(localBoard); whiteToMove=localState.wt;
+    gameStatus=newStatus; lastMove=[fr,fc,tr,tc];
+    hintMove=null; clearTimeout(hintTimer);
+    moveHistory.push(s);
+    fullMoveLog.push({fr,fc,tr,tc,promo:promo||'q',san:s,wasWhite});
+    renderBoard(); updateStatus(); renderMoveList();
+  });
 }
 
 function isGameOver(){return['WHITE_WINS','BLACK_WINS','STALEMATE','DRAW'].includes(gameStatus);}
@@ -1326,34 +1342,45 @@ function doPromotion(p){
 //  BOARD RENDERING
 // ══════════════════════════════════════════════════════════════════════════
 function renderBoard(){
-  const el=document.getElementById('board'); el.innerHTML='';
   if(!boardArr) return;
+  const el=document.getElementById('board');
   const flip=(gameMode==='online'&&myColor==='black')||(gameMode==='bot'&&playerColor==='black');
 
-  for(let vr=0;vr<8;vr++) for(let vc=0;vc<8;vc++){
-    const row=flip?7-vr:vr, col=flip?7-vc:vc;
-    const sq=document.createElement('div');
-    sq.className='sq '+((row+col)%2===0?'light':'dark');
-    sq.dataset.row=row; sq.dataset.col=col;
+  // Only rebuild DOM structure when board orientation changes (first render or flip)
+  if(flip !== _boardFlip){
+    el.innerHTML=''; _boardFlip=flip;
+    for(let vr=0;vr<8;vr++) for(let vc=0;vc<8;vc++){
+      const row=flip?7-vr:vr, col=flip?7-vc:vc;
+      const sq=document.createElement('div');
+      sq.className='sq '+((row+col)%2===0?'light':'dark');
+      sq.dataset.row=row; sq.dataset.col=col;
+      if((!flip&&col===0)||(flip&&col===7)){const r=document.createElement('span');r.className='coord-rank';r.textContent=8-row;sq.appendChild(r);}
+      if((!flip&&row===7)||(flip&&row===0)){const f=document.createElement('span');f.className='coord-file';f.textContent=FILES[col];sq.appendChild(f);}
+      sq.addEventListener('click',()=>onSqClick(row,col));
+      el.appendChild(sq);
+    }
+  }
 
+  // Update only classes and piece images — no DOM teardown
+  el.querySelectorAll('.sq').forEach(sq=>{
+    const row=+sq.dataset.row, col=+sq.dataset.col;
+    sq.classList.remove('selected','last-move','valid-move','valid-capture','hint-from','hint-to','in-check');
     if(selectedSq&&selectedSq.row===row&&selectedSq.col===col) sq.classList.add('selected');
     if(lastMove&&((lastMove[0]===row&&lastMove[1]===col)||(lastMove[2]===row&&lastMove[3]===col))) sq.classList.add('last-move');
-
     const isV=validMoves.some(m=>m.row===row&&m.col===col);
     if(isV) sq.classList.add(boardArr[row][col]?'valid-capture':'valid-move');
     if(hintMove){if(row===hintMove[0]&&col===hintMove[1]) sq.classList.add('hint-from');if(row===hintMove[2]&&col===hintMove[3]) sq.classList.add('hint-to');}
-
     const p=boardArr[row][col];
     if(p&&((p==='K'&&gameStatus==='CHECK'&&whiteToMove)||(p==='k'&&gameStatus==='CHECK'&&!whiteToMove))) sq.classList.add('in-check');
 
-    if((!flip&&col===0)||(flip&&col===7)){const r=document.createElement('span');r.className='coord-rank';r.textContent=8-row;sq.appendChild(r);}
-    if((!flip&&row===7)||(flip&&row===0)){const f=document.createElement('span');f.className='coord-file';f.textContent=FILES[col];sq.appendChild(f);}
-
-    if(p){const img=document.createElement('img');const color=p===p.toUpperCase()?'w':'b';const type=p.toLowerCase();img.src=`/pieces/${color}${type}.png`;img.className='piece';img.draggable=false;sq.appendChild(img);}
-
-    sq.addEventListener('click',()=>onSqClick(row,col));
-    el.appendChild(sq);
-  }
+    // Reuse existing <img> if piece unchanged — avoids reload flicker
+    const img=sq.querySelector('.piece');
+    if(p){
+      const newSrc=`/pieces/${p===p.toUpperCase()?'w':'b'}${p.toLowerCase()}.png`;
+      if(img){ if(!img.src.endsWith(newSrc.slice(1))) img.src=newSrc; img.style.opacity=''; }
+      else{ const i=document.createElement('img');i.src=newSrc;i.className='piece';i.draggable=false;sq.appendChild(i); }
+    } else if(img) img.remove();
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1407,15 +1434,24 @@ function animatePieceMove(fr,fc,tr,tc,done){
   if(!fromEl||!toEl){done();return;}
   const pieceEl=fromEl.querySelector('.piece');
   if(!pieceEl){done();return;}
-  const fr2=fromEl.getBoundingClientRect(),to2=toEl.getBoundingClientRect();
-  const dx=to2.left-fr2.left,dy=to2.top-fr2.top;
-  const ghost=pieceEl.cloneNode(true);
-  Object.assign(ghost.style,{position:'fixed',left:fr2.left+'px',top:fr2.top+'px',width:fr2.width+'px',height:fr2.height+'px',fontSize:getComputedStyle(pieceEl).fontSize,display:'flex',alignItems:'center',justifyContent:'center',zIndex:'1000',transition:'transform 0.22s cubic-bezier(.25,.8,.25,1)',pointerEvents:'none'});
+  const r1=fromEl.getBoundingClientRect(), r2=toEl.getBoundingClientRect();
+  const dx=r2.left-r1.left, dy=r2.top-r1.top;
+
+  // Ghost flies across board; original piece is hidden during flight
+  const ghost=document.createElement('img');
+  ghost.src=pieceEl.src; ghost.className='piece';
+  ghost.style.cssText=`position:fixed;left:${r1.left}px;top:${r1.top}px;width:${r1.width}px;height:${r1.height}px;z-index:200;pointer-events:none;margin:0;filter:drop-shadow(0 4px 12px rgba(0,0,0,.55));`;
+  pieceEl.style.opacity='0';
   document.body.appendChild(ghost);
-  const tp=toEl.querySelector('.piece'); if(tp) tp.classList.add('capturing');
+
+  // Fade out captured piece
+  const cap=toEl.querySelector('.piece');
+  if(cap){cap.style.transition='opacity 0.08s';cap.style.opacity='0';}
+
   requestAnimationFrame(()=>{
+    ghost.style.transition='transform 0.17s cubic-bezier(.2,.8,.35,1)';
     ghost.style.transform=`translate(${dx}px,${dy}px)`;
-    ghost.addEventListener('transitionend',()=>{ghost.remove();done();},{once:true});
+    ghost.addEventListener('transitionend',()=>{ ghost.remove(); done(); },{once:true});
   });
 }
 
